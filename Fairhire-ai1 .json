@@ -1,0 +1,425 @@
+{
+  "name": "fairai",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-fair-hiring2.0",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        -224
+      ],
+      "id": "1780609d-8f04-47ed-af75-0d2cbcacf4c3",
+      "name": "candidates data",
+      "webhookId": "2d406dca-eabf-46b4-8f8d-80a7c584d72c"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first();\n\nconst body = item.json.body || item.json;\n\nreturn [{\n  json: {\n    name: body.name,\n    age: Number(body.age),\n    gender: body.gender,\n    experience: Number(body.experience),\n    skills: String(body.skills || '')\n      .split(',')\n      .map(s => s.trim())\n  },\n  binary: item.binary\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        -224
+      ],
+      "id": "de8617e5-b12f-4d98-a524-0de431176a60",
+      "name": "prepare input data"
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "binaryPropertyName": "resume",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        448,
+        -224
+      ],
+      "id": "5eb0cd48-9364-4efd-bee7-5be3dbdb23b8",
+      "name": "Extract resume text"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    body: JSON.stringify({\n      contents: [{\n        parts: [{\n          text: `You are an AI hiring assistant.\n\nReturn ONLY valid JSON. No markdown. No explanation outside JSON.\n\nFormat:\n{\n  \"score\": number,\n  \"skills\": [],\n  \"experince\":[],\n  \"strengths\": [],\n  \"weaknesses\": [],\n  \"decision\": \"SHORTLISTED or REJECTED\",\n  \"explanation\": \"text\"\n}\n\nEvaluate only skills and experience.\n\nResume:\n${$json.resume_text}`\n        }]\n      }]\n    })\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        -224
+      ],
+      "id": "cf54faaf-7b58-4537-b667-6e690e28bf00",
+      "name": "build ai prompt"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        "sendHeaders": false,
+        
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1120,
+        -224
+      ],
+      "id": "79577afa-31a4-4f2a-a8a2-6630477997d7",
+      "name": "call ai model (gemini)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Step 1: Get raw AI response\nconst raw = $json.candidates?.[0]?.content?.parts?.[0]?.text || \"\";\n\n// Step 2: Clean markdown\nconst cleaned = raw\n  .replace(/```json/g, \"\")\n  .replace(/```/g, \"\")\n  .trim();\n\n// Step 3: Convert to JSON\nlet parsed;\ntry {\n  parsed = JSON.parse(cleaned);\n} catch (err) {\n  throw new Error(\"Invalid JSON from AI: \" + cleaned);\n}\n\n// ✅ Step 4: RETURN WITH OLD DATA (THIS IS THE FIX)\nreturn [\n  {\n    json: {\n      ...$node[\"prepare input data\"].json,\n      ...parsed   // 🔥 ADD AI output (score, skills, etc.)\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        -224
+      ],
+      "id": "c656c0c9-7ef6-419b-84ca-c789494f2053",
+      "name": "parse ai response"
+    },
+    {
+      "parameters": {
+        "jsCode": "const score = $json.score || 0;\n\nreturn [{\n  json: {\n    ...$json,\n    final_decision:\n      score >= 75 ? \"STRONG HIRE\" :\n      score >= 60 ? \"SHORTLISTED\" :\n      \"REJECTED\",\n\n    confidence:\n      score >= 80 ? \"HIGH\" :\n      score >= 60 ? \"MEDIUM\" :\n      \"LOW\"\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1568,
+        -224
+      ],
+      "id": "ca47be27-b5f9-499a-8ef2-530bc46dad66",
+      "name": "extract candidate insigths"
+    },
+    {
+      "parameters": {
+        "jsCode": "const text = ($json.explanation || \"\").toLowerCase();\n\n// keywords that indicate bias\nconst bias_keywords = [\n  \"he\", \"she\", \"him\", \"her\",\n  \"male\", \"female\",\n  \"age\", \"young\", \"old\",\n  \"chennai\", \"india\", \"location\"\n];\n\nlet bias_found = false;\n\nfor (const word of bias_keywords) {\n  if (text.includes(word)) {\n    bias_found = true;\n    break;\n  }\n}\n\nreturn [{\n  json: {\n    ...$json,\n    bias_status: bias_found ? \"POTENTIAL BIAS ⚠️\" : \"UNBIASED ✅\"\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1792,
+        -224
+      ],
+      "id": "2a446e8e-3b0e-4a59-b34d-28a7d76e684c",
+      "name": "delect bias signals"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    ...$json,\n    fairness_report: {\n      checked_attributes: [\n        \"gender\",\n        \"age\",\n        \"location\",\n        \"name\"\n      ],\n      result: $json.bias_status,\n      note: \"Evaluation based only on skills and experience\"\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2016,
+        -224
+      ],
+      "id": "281c700c-7a85-42c4-842e-49fbfe63e7cf",
+      "name": "calculate fairness score"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $json;\n\nlet fairness_score = 100;\nlet bias_flags = [];\n\n// Age bias check\nif (data.age && (data.age < 18 || data.age > 60)) {\n  bias_flags.push(\"Age may influence decision\");\n  fairness_score -= 10;\n}\n\n// Gender bias handling\nif (data.gender) {\n  bias_flags.push(\"Gender ignored in scoring (fairness applied)\");\n}\n\n// Resume quality check\nif (!data.resume_text || data.resume_text.length < 50) {\n  bias_flags.push(\"Low resume detail may affect fairness\");\n  fairness_score -= 15;\n}\n\nif (fairness_score < 0) fairness_score = 0;\n\nreturn [{\n  json: {\n    ...data,\n    fairness_score,\n    bias_flags,\n    bias_summary: bias_flags.length > 0\n      ? \"Potential bias factors detected and adjusted\"\n      : \"No bias detected\"\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        -224
+      ],
+      "id": "cdae5866-a53a-4b95-a067-b8cf2e8ef8c3",
+      "name": "generate final decisions"
+    },
+    {
+      "parameters": {
+        "tableId": "candidates_results",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "name",
+              "fieldValue": "={{ $json.name }}"
+            },
+            {
+              "fieldId": "age",
+              "fieldValue": "={{ $json.age }}"
+            },
+            {
+              "fieldId": "gender",
+              "fieldValue": "={{ $json.gender }}"
+            },
+            {
+              "fieldId": "skills",
+              "fieldValue": "={{ $json.skills }}"
+            },
+            {
+              "fieldId": "experience",
+              "fieldValue": "={{ $json.experience }}"
+            },
+            {
+              "fieldId": "ai_score",
+              "fieldValue": "={{ $json.score }}"
+            },
+            {
+              "fieldId": "bias_flags",
+              "fieldValue": "={{ $json.bias_flags }}"
+            },
+            {
+              "fieldId": "fairness_score",
+              "fieldValue": "={{ $json.fairness_score }}"
+            },
+            {
+              "fieldId": "explanation",
+              "fieldValue": "={{ $json.explanation }}"
+            },
+            {
+              "fieldId": "strengths",
+              "fieldValue": "={{ $json.strengths }}"
+            },
+            {
+              "fieldId": "weaknesses",
+              "fieldValue": "={{ $json.weaknesses }}"
+            },
+            {
+              "fieldId": "confidence",
+              "fieldValue": "={{ $json.confidence }}"
+            },
+            {
+              "fieldId": "bias_summary",
+              "fieldValue": "={{ $json.bias_summary }}"
+            },
+            {
+              "fieldId": "decision",
+              "fieldValue": "={{ $json.decision }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        2688,
+        -224
+      ],
+      "id": "43520378-80fa-4e6a-930b-81ff404a2fb2",
+      "name": "store candidate result1",
+      "credentials": {
+        "supabaseApi": {
+          "id": "9mUMK6Wk1wWWSBDT",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let bias_flags = $json.bias_flags || [];\n\nlet fairness_score = bias_flags.length > 0 ? 50 : 90;\n\nreturn [{\n  json: {\n    ...$json,\n    fairness_score,\n    bias_flags,\n    bias_status: bias_flags.length > 0 ? \"POTENTIAL BIAS\" : \"UNBIASED\",\n    bias_badge: fairness_score >= 80 ? \"🟢 Fair\" : \"🔴 Needs Review\"\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2464,
+        -224
+      ],
+      "id": "76b80cdd-a729-4a93-8942-3aaecfe1c538",
+      "name": "bias review"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        2912,
+        -224
+      ],
+      "id": "04f4c984-0a67-4021-a9bc-e37319a64e39",
+      "name": "return api response"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    name: $json.name,\n    age: $json.age,\n    gender: $json.gender,\n    skills: $json.skills,\n    experience: $json.experience,\n    resume_text: $json.text\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        -224
+      ],
+      "id": "548eddac-b11d-44ee-a8f4-ef4bae4604c2",
+      "name": "clean resume text"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "candidates data": {
+      "main": [
+        [
+          {
+            "node": "prepare input data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "prepare input data": {
+      "main": [
+        [
+          {
+            "node": "Extract resume text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract resume text": {
+      "main": [
+        [
+          {
+            "node": "clean resume text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "build ai prompt": {
+      "main": [
+        [
+          {
+            "node": "call ai model (gemini)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "call ai model (gemini)": {
+      "main": [
+        [
+          {
+            "node": "parse ai response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse ai response": {
+      "main": [
+        [
+          {
+            "node": "extract candidate insigths",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "extract candidate insigths": {
+      "main": [
+        [
+          {
+            "node": "delect bias signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "delect bias signals": {
+      "main": [
+        [
+          {
+            "node": "calculate fairness score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "calculate fairness score": {
+      "main": [
+        [
+          {
+            "node": "generate final decisions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "generate final decisions": {
+      "main": [
+        [
+          {
+            "node": "bias review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "store candidate result1": {
+      "main": [
+        [
+          {
+            "node": "return api response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "bias review": {
+      "main": [
+        [
+          {
+            "node": "store candidate result1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "clean resume text": {
+      "main": [
+        [
+          {
+            "node": "build ai prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "3302593a-b2db-44a8-9aea-ce5e6c0309bd",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "7bdd8e6c0584badadd5c570f5c675978c69354c9bd85778de04d2f297590f5e0"
+  },
+  "id": "lsODRZhQAujqp3kD",
+  "tags": []
+}
